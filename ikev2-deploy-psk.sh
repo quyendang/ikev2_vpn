@@ -12,7 +12,7 @@ if [ $(lsb_release -i -s) != "Ubuntu" ] || [ $(lsb_release -r -s) != "16.04" ]; 
 fi
 
 export SHARED_KEY=$(uuidgen)
-export IP=159.8.21.86
+export IP=$(curl -s api.ipify.org)
 
 echo "Your shared key (PSK) is $SHARED_KEY and your IP is $IP"
 echo -e "Press enter to continue...\n"; read
@@ -33,29 +33,48 @@ apt-get -y install strongswan strongswan-plugin-eap-mschapv2 moreutils iptables-
 
 cat << EOF > /etc/ipsec.conf
 config setup
-    charondebug="ike 1, knl 1, cfg 0"
     uniqueids=no
+    charondebug="cfg -1, dmn -1, ike -1, net -1"
 
-conn ikev2-vpn
-    auto=add
-    compress=no
-    type=tunnel
+conn %default
+    ikelifetime=24h
+    keylife=12h
+    rekeymargin=3m
+    keyingtries=1
     keyexchange=ikev2
-    fragmentation=yes
-    forceencaps=yes
-    ike=aes256-sha1-modp1024,3des-sha1-modp1024!,aes256-sha2_256
-    esp=aes256-sha1,3des-sha1!
-    dpdaction=clear
-    dpddelay=300s
-    rekey=no
-    left=%any
-    leftid=%any
-    leftsubnet=0.0.0.0/0
-    right=%any
-    rightid=%any
-    rightdns=8.8.8.8,8.8.4.4
-    rightsourceip=159.8.21.80/29
     authby=secret
+    forceencaps=yes
+
+# left is local, right is 2nd-level gateway
+conn relay
+    left=%defaultroute
+    leftsourceip=10.0.1.1
+    leftsubnet=0.0.0.0/0
+    leftfirewall=yes
+    right=%any
+    rightsourceip=10.0.1.0/24
+    auto=add
+    keyexchange=ikev1
+
+# left is local, right is access client
+conn nat-t
+    left=%defaultroute
+    leftsubnet=0.0.0.0/0
+    leftfirewall=yes
+    right=%any
+    rightsourceip=10.0.1.0/24
+    auto=add
+
+# left is local, right is access client
+conn nat-t-win10
+    left=%defaultroute
+    leftsubnet=0.0.0.0/0
+    leftfirewall=yes
+    right=%any
+    rightsourceip=10.0.1.0/24
+    rightauth=eap-mschapv2
+    ike=aes256-sha1-modp1024!
+    auto=add
 EOF
 
 sed -i "s/@server_name_or_ip/${IP}/g" /etc/ipsec.conf
@@ -92,11 +111,11 @@ iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -p udp --dport  500 -j ACCEPT
 iptables -A INPUT -p udp --dport 4500 -j ACCEPT
 
-iptables -A FORWARD --match policy --pol ipsec --dir in  --proto esp -s 10.105.141.64/26 -j ACCEPT
-iptables -A FORWARD --match policy --pol ipsec --dir out --proto esp -d 10.105.141.64/26 -j ACCEPT
-iptables -t nat -A POSTROUTING -s 10.105.141.64/26 -o eth0 -m policy --pol ipsec --dir out -j ACCEPT
-iptables -t nat -A POSTROUTING -s 10.105.141.64/26 -o eth0 -j MASQUERADE
-iptables -t mangle -A FORWARD --match policy --pol ipsec --dir in -s 10.105.141.64/26 -o eth0 -p tcp -m tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1361:1536 -j TCPMSS --set-mss 1360
+iptables -A FORWARD --match policy --pol ipsec --dir in  --proto esp -s 10.0.1.0/24 -j ACCEPT
+iptables -A FORWARD --match policy --pol ipsec --dir out --proto esp -d 10.0.1.0/24 -j ACCEPT
+iptables -t nat -A POSTROUTING -s 10.0.1.0/24 -o eth0 -m policy --pol ipsec --dir out -j ACCEPT
+iptables -t nat -A POSTROUTING -s 10.0.1.0/24 -o eth0 -j MASQUERADE
+iptables -t mangle -A FORWARD --match policy --pol ipsec --dir in -s 10.0.1.0/24 -o eth0 -p tcp -m tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1361:1536 -j TCPMSS --set-mss 1360
 
 iptables -A INPUT -j DROP
 iptables -A FORWARD -j DROP
